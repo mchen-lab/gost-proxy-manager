@@ -1,6 +1,10 @@
 # GOST Rotating Proxy Manager
 
-An **all-in-one** solution that bundles the **GOST** (GO Simple Tunnel) proxy with a modern Web UI and REST API into a single, installable **Docker image**, providing a self-contained environment for rotating proxy server with one docker command.
+[![MIT License](https://img.shields.io/badge/License-MIT-green.svg)](https://choosealicense.com/licenses/mit/)
+[![Node.js](https://img.shields.io/badge/Node.js-20+-339933.svg)](https://nodejs.org/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
+
+An **all-in-one** solution that bundles the **GOST** (GO Simple Tunnel) proxy with a modern Web UI into a single, installable **Docker image**, providing a self-contained environment for rotating proxy server with one docker command.
 
 ## Quick Start
 
