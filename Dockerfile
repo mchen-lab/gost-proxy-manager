@@ -44,17 +44,17 @@ COPY start.sh ./
 RUN chmod +x start.sh
 
 # Copy GOST binary from official image (v3)
-COPY --from=go-gost/gost:latest /bin/gost /usr/local/bin/gost
+COPY --from=gogost/gost:latest /bin/gost /usr/local/bin/gost
 
-# Expose ports: 3000 (UI), 8080 (Proxy)
-EXPOSE 3000 8080
+# Expose ports: 31130 (UI), 31131 (Proxy), 31132 (API)
+EXPOSE 31130 31131 31132
 
 # Set environment variables
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=31130
 # Can be overridden
-ENV GOST_API_URL=http://localhost:18080
-ENV GOST_PROXY_URL=http://localhost:8080
+ENV GOST_API_URL=http://localhost:31132
+ENV GOST_PROXY_URL=http://localhost:31131
 
 # Start the server wrapper
 CMD ["./start.sh"]

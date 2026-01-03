@@ -1,5 +1,6 @@
 import path from "path"
 import { defineConfig } from 'vite'
+import { execSync } from 'child_process'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import fs from 'fs'
@@ -12,10 +13,8 @@ const packageJson = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.
 let commitHash = process.env.GIT_COMMIT;
 if (!commitHash) {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { execSync } = require('child_process');
     commitHash = execSync('git rev-parse --short HEAD').toString().trim();
-  } catch (e) {
+  } catch {
     commitHash = 'unknown';
   }
 }
@@ -34,11 +33,11 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        target: 'http://localhost:31130',
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://localhost:3000',
+        target: 'ws://localhost:31130',
         ws: true,
         changeOrigin: true,
       }

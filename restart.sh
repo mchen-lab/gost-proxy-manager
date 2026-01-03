@@ -70,9 +70,9 @@ trap cleanup INT TERM EXIT
 # --- Main Execution ---
 
 echo "🛑 Stopping any existing processes..."
-kill_port 3000 "Frontend"
-kill_port 8080 "GOST Proxy"
-kill_port 18080 "GOST API"
+kill_port 31130 "Frontend/Backend"
+kill_port 31131 "GOST Proxy"
+kill_port 31132 "GOST API"
 
 echo ""
 echo "🎯 Starting Development Environment..."
@@ -95,14 +95,19 @@ else
     echo "✅ Found GOST: $GOST_BINARY_PATH"
 fi
 
+# Export ports for local dev
+export PORT=31130
+export GOST_PROXY_URL=http://localhost:31131
+export GOST_API_URL=http://localhost:31132
+
 start_app
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "✅ Environment is running!"
 echo "   - Frontend: http://localhost:5173 (Default Vite)"
-echo "   - Backend:  http://localhost:3000"
-echo "   - GOST API: http://localhost:18080"
+echo "   - Backend:  http://localhost:31130"
+echo "   - GOST API: http://localhost:31132"
 echo ""
 echo "Logs are being written to ./logs/"
 echo "Press Ctrl+C to stop"

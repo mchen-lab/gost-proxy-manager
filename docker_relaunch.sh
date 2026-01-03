@@ -4,9 +4,10 @@ set -e
 TAG="dev"
 DELETE_VOLUME=false
 CONTAINER_NAME="gost-proxy-manager"
-# Ports: 31120 (UI) mapped to 3000, 31121 (Proxy) mapped to 8080
-UI_PORT=31120
-PROXY_PORT=31121
+# Ports: 31130 (UI), 31131 (Proxy), 31132 (API)
+UI_PORT=31130
+PROXY_PORT=31131
+API_PORT=31132
 VOLUME="gost_proxy_manager_data"
 
 # Parse arguments
@@ -56,13 +57,15 @@ fi
 echo "▶️  Starting new container..."
 docker run -d \
   --name "$CONTAINER_NAME" \
-  -p "$UI_PORT:3000" \
-  -p "$PROXY_PORT:8080" \
+  -p "$UI_PORT:31130" \
+  -p "$PROXY_PORT:31131" \
+  -p "$API_PORT:31132" \
   -v "$VOLUME:/app/data" \
   "$IMAGE"
 
 echo "✅ Container started!"
-echo "   - Web UI: http://localhost:$UI_PORT"
-echo "   - Proxy:  http://localhost:$PROXY_PORT"
+echo "   - Web UI: http://localhost:$UI_PORT
+  - Proxy:  http://localhost:$PROXY_PORT
+  - API:    http://localhost:$API_PORT"
 echo "   - Tag: $TAG"
 echo "   - Logs: docker logs -f $CONTAINER_NAME"

@@ -12,8 +12,8 @@ sleep 2
 # Start Node Manager
 echo "Starting Manager..."
 # Pass default env vars if not set, but allow override
-export GOST_API_URL=${GOST_API_URL:-http://localhost:18080}
-export GOST_PROXY_URL=${GOST_PROXY_URL:-http://localhost:8080}
+export GOST_API_URL=${GOST_API_URL:-http://localhost:31132}
+export GOST_PROXY_URL=${GOST_PROXY_URL:-http://localhost:31131}
 
 node dist-server/server/index.js &
 

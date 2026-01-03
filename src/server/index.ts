@@ -6,7 +6,7 @@ import axios from "axios";
 import path from "path";
 import fs from "fs/promises";
 import { fileURLToPath } from "url";
-import { GostManager } from "./gostManager";
+import { GostManager } from "./gostManager.js";
 import winston from "winston";
 import DailyRotateFile from "winston-daily-rotate-file";
 import { HttpsProxyAgent } from "https-proxy-agent";
@@ -16,9 +16,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const GOST_API_URL = process.env.GOST_API_URL || "http://127.0.0.1:18080";
-const GOST_PROXY_URL = process.env.GOST_PROXY_URL || "http://localhost:8080";
+const PORT = process.env.PORT || 31130;
+const GOST_API_URL = process.env.GOST_API_URL || "http://127.0.0.1:31132";
+const GOST_PROXY_URL = process.env.GOST_PROXY_URL || "http://127.0.0.1:31131";
 
 // --- Logger Setup ---
 const LOG_DIR = path.join(__dirname, "../../logs");
@@ -270,7 +270,7 @@ async function updateGostChain() {
                 type: protocol
             }
         });
-    } catch (e) {
+    } catch {
         console.warn("Failed to parse proxy line:", line);
     }
   }
@@ -296,7 +296,7 @@ async function updateGostChain() {
 
   const servicePayload = {
     name: "proxy-service",
-    addr: ":8080", // Main entry point
+    addr: `:${GOST_PROXY_PORT}`, // Main entry point
     handler: {
       type: "http",
       chain: "upstream-chain"
@@ -310,7 +310,7 @@ async function updateGostChain() {
     // 1. Configure Chain
     try {
         await axios.delete(`${GOST_API_URL}/config/chains/upstream-chain`);
-    } catch (e) { /* ignore 404 */ }
+    } catch { /* ignore 404 */ }
     
     // Create Config Chain
     await axios.post(`${GOST_API_URL}/config/chains`, chainPayload);
@@ -318,7 +318,7 @@ async function updateGostChain() {
     // 2. Configure Service
     try {
         await axios.delete(`${GOST_API_URL}/config/services/proxy-service`);
-    } catch (e) { /* ignore 404 */ }
+    } catch { /* ignore 404 */ }
 
     // Create Service
     await axios.post(`${GOST_API_URL}/config/services`, servicePayload);
@@ -468,7 +468,7 @@ app.post("/api/settings", async (req: Request, res: Response) => {
         }
         
         res.json({ success: true, settings: globalConfig.system });
-    } catch (error) {
+    } catch {
         res.status(500).json({ error: "Failed to save settings" });
     }
 });
@@ -494,7 +494,7 @@ app.post("/api/test-urls", async (req: Request, res: Response) => {
         globalConfig.testUrls = urls;
         await saveConfig();
         res.json({ success: true, count: urls.length });
-    } catch (error) {
+    } catch {
         res.status(500).json({ error: "Failed to save test URLs" });
     }
 });
@@ -573,7 +573,7 @@ app.post("/api/service/restart", async (_req: Request, res: Response) => {
         await gostManager.restart(undefined, getGostEnv());
         restoreProxies(); // Re-apply config
         res.json({ success: true });
-    } catch (e) {
+    } catch {
         res.status(500).json({ error: "Failed to restart" });
     }
 });
@@ -583,7 +583,7 @@ app.post("/api/service/start", async (_req: Request, res: Response) => {
         gostManager.start(undefined, getGostEnv());
         restoreProxies(); // Re-apply config
         res.json({ success: true });
-    } catch (e) {
+    } catch {
         res.status(500).json({ error: "Failed to start" });
     }
 });
@@ -592,7 +592,7 @@ app.post("/api/service/stop", async (_req: Request, res: Response) => {
     try {
         await gostManager.stop();
         res.json({ success: true });
-    } catch (e) {
+    } catch {
         res.status(500).json({ error: "Failed to stop" });
     }
 });
@@ -714,7 +714,7 @@ app.get("/api/test", async (req: Request, res: Response) => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     // Check if it's an axios error with response
-    const status = (error as any).response?.status || "ERR";
+    const status = (error as { response?: { status?: number } }).response?.status || "ERR";
 
     // Keep error logs for debugging
     broadcastLog({

@@ -13,7 +13,7 @@ export class GostManager {
   // v3: Launch with API service enabled.
   // We use -L="api://:18080" to start the API service.
   // The actual proxy service will be created dynamically via this API.
-  constructor(binPath: string = "/usr/local/bin/gost", defaultArgs: string[] = ["-api", "127.0.0.1:18080"]) {
+  constructor(binPath: string = "/usr/local/bin/gost", defaultArgs: string[] = ["-api", ":31132"]) {
     // If binPath is empty/undefined (handled by default param, but explicit empty string override needs check)
     if (!binPath) {
         binPath = "/usr/local/bin/gost";

@@ -90,17 +90,17 @@ function App() {
       if (settingsRes?.ok) {
           try {
             setSettings(await settingsRes.json());
-          } catch(e) { console.warn("Failed to parse settings", e); }
+          } catch { console.warn("Failed to parse settings"); }
       }
 
       if (urlsRes?.ok) {
           try {
             const data = await urlsRes.json();
             setTestUrls(data.urls || []);
-          } catch(e) { console.warn("Failed to parse test URLs", e); }
+          } catch { console.warn("Failed to parse test URLs"); }
       }
-    } catch (e) {
-      console.error("Fetch status error", e);
+    } catch {
+      console.error("Fetch status error");
       setStatus({ online: false, proxyServiceReady: false, proxyCount: 0 });
     }
   }, []);
@@ -245,12 +245,12 @@ function App() {
          };
          
          runNext();
-     } catch (e) {
+     } catch {
          isTestingRef.current = false;
          toast.error("Failed to start tests");
          setIsTesting(false);
      }
-  }, [status.proxyCount]);
+  }, [status.proxyCount, TEST_DURATION_LIMIT]);
 
   return (
     <div className="min-h-screen bg-slate-50">
