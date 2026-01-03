@@ -1,11 +1,14 @@
 import { spawn, ChildProcess } from "child_process";
 import fs from "fs";
 
+export type GostLogCallback = (log: string) => void;
+
 export class GostManager {
   private process: ChildProcess | null = null;
   private binPath: string;
   private defaultArgs: string[];
   private isShuttingDown: boolean = false;
+  private onLog: GostLogCallback | null = null;
 
   // v3: Launch with API service enabled.
   // We use -L="api://:18080" to start the API service.
@@ -22,6 +25,11 @@ export class GostManager {
     }
     this.binPath = binPath;
     this.defaultArgs = defaultArgs;
+  }
+
+  // Set a callback to receive GOST log output
+  public setLogCallback(callback: GostLogCallback): void {
+    this.onLog = callback;
   }
 
   public start(args?: string[], env?: NodeJS.ProcessEnv): void {
@@ -53,10 +61,24 @@ export class GostManager {
   }
 
   private spawnProcess(command: string, args: string[], env?: NodeJS.ProcessEnv) {
+    // GOST v3 logs to stderr only
     this.process = spawn(command, args, {
-      stdio: "inherit", // Pipe logs to main process stdout for now
+      stdio: ["ignore", "ignore", "pipe"], // Capture stderr only (GOST logs here)
       detached: false,
       env: { ...process.env, ...env } // Merge with existing env
+    });
+
+    // Handle stderr (where GOST v3 logs go)
+    this.process.stderr?.on("data", (data: Buffer) => {
+      const lines = data.toString().trim().split("\n");
+      for (const line of lines) {
+        if (line.trim()) {
+          console.log(line); // Also log to console
+          if (this.onLog) {
+            this.onLog(line);
+          }
+        }
+      }
     });
 
     this.process.on("error", (err) => {

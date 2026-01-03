@@ -7,6 +7,10 @@ import path from "path";
 import fs from "fs/promises";
 import { fileURLToPath } from "url";
 import { GostManager } from "./gostManager";
+import winston from "winston";
+import DailyRotateFile from "winston-daily-rotate-file";
+import { HttpsProxyAgent } from "https-proxy-agent";
+import { HttpProxyAgent } from "http-proxy-agent";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,24 +20,41 @@ const PORT = process.env.PORT || 3000;
 const GOST_API_URL = process.env.GOST_API_URL || "http://127.0.0.1:18080";
 const GOST_PROXY_URL = process.env.GOST_PROXY_URL || "http://localhost:8080";
 
-// Helper to get GOST env
+// --- Logger Setup ---
+const LOG_DIR = path.join(__dirname, "../../logs");
+
+// Configure logger (Hardcoded rules: 5MB, keep 5 files)
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.printf(({ timestamp, level, message }) => {
+      return `${timestamp} [${level.toUpperCase()}]: ${message}`;
+    })
+  ),
+  transports: [
+    new winston.transports.Console({
+        format: winston.format.simple()
+    }),
+    new DailyRotateFile({
+      filename: path.join(LOG_DIR, 'app-%DATE%.log'),
+      datePattern: 'YYYY-MM-DD',
+      zippedArchive: true,
+      maxSize: '5m',
+      maxFiles: '5'
+    })
+  ]
+});
+
+// Helper to get GOST env (Thread logic removed)
 function getGostEnv() {
     const env: NodeJS.ProcessEnv = {};
-    if (currentSettings.concurrency > 0) {
-        env.GOMAXPROCS = currentSettings.concurrency.toString();
-    }
     return env;
 }
 
 // Initialize GostManager
 const GOST_BINARY_PATH = process.env.GOST_BINARY_PATH || undefined;
 const gostManager = new GostManager(GOST_BINARY_PATH);
-
-// Start GOST on startup
-loadSettingsFromFile().then(() => {
-    // Start with loaded settings
-    gostManager.start(undefined, getGostEnv());
-});
 
 // Handle graceful shutdown
 process.on('SIGTERM', async () => {
@@ -80,84 +101,137 @@ interface LogEntry {
 
 // Store for logs (in-memory circular buffer)
 const logs: LogEntry[] = [];
-const MAX_LOGS = 500;
-
-// Store for proxy list (local backup since GOST API can be inconsistent)
-let savedProxyList: string[] = [];
+const MAX_LOGS = 1000; // Hardcoded memory limit
 
 // Persistence file path
 const DATA_DIR = path.join(__dirname, "../../data");
-const PROXY_FILE = path.join(DATA_DIR, "proxies.json");
 const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
+// Legacy files to be migrated/removed
+const LEGACY_PROXY_FILE = path.join(DATA_DIR, "proxies.json");
+const LEGACY_URLS_FILE = path.join(DATA_DIR, "test_urls.json");
 
-interface Settings {
-    concurrency: number; // 0 = Auto
+interface SystemSettings {
     strategy: string; // round, random, fifo
     maxRetries: number;
     timeout: number;
 }
 
-let currentSettings: Settings = {
-    concurrency: 0,
-    strategy: "round",
-    maxRetries: 1,
-    timeout: 10
+interface GlobalConfig {
+    system: SystemSettings;
+    proxies: string[];
+    testUrls: string[];
+}
+
+// Default State
+let globalConfig: GlobalConfig = {
+    system: {
+        strategy: "round",
+        maxRetries: 1,
+        timeout: 10
+    },
+    proxies: [],
+    testUrls: [
+        "https://api.ipify.org?format=json",
+        "https://www.google.com",
+        "https://www.bbc.com/news",
+        "https://en.wikipedia.org/wiki/Main_Page",
+        "https://www.nytimes.com",
+        "https://www.reuters.com",
+        "https://www.theguardian.com",
+        "https://news.ycombinator.com"
+    ]
 };
 
-// Save settings to file
-async function saveSettingsToFile(settings: Settings) {
+// Unified Save
+async function saveConfig() {
   try {
     await fs.mkdir(DATA_DIR, { recursive: true });
-    await fs.writeFile(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
-    console.log(`💾 Saved settings to ${SETTINGS_FILE}`);
+    await fs.writeFile(SETTINGS_FILE, JSON.stringify(globalConfig, null, 2), "utf-8");
+    console.log(`💾 Saved config to ${SETTINGS_FILE}`);
   } catch (err) {
-    console.error("❌ Failed to save settings:", err);
+    console.error("❌ Failed to save config:", err);
   }
 }
 
-// Load settings from file
-async function loadSettingsFromFile() {
+// Helper to check if a file exists asynchronously
+async function fileExists(filePath: string): Promise<boolean> {
   try {
-    const data = await fs.readFile(SETTINGS_FILE, "utf-8");
-    const settings = JSON.parse(data);
-    currentSettings = { ...currentSettings, ...settings };
-    console.log(`⚙️ Loaded settings:`, currentSettings);
-  } catch (err) {
-    // Ignore if file doesn't exist, utilize defaults
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
   }
 }
 
-// Save proxies to file
-async function saveProxiesToFile(proxies: string[]) {
-  try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    await fs.writeFile(PROXY_FILE, JSON.stringify(proxies, null, 2), "utf-8");
-    console.log(`💾 Saved ${proxies.length} proxies to ${PROXY_FILE}`);
-  } catch (err) {
-    console.error("❌ Failed to save proxies:", err);
-  }
-}
-
-// Load proxies from file
-async function loadProxiesFromFile(): Promise<string[]> {
-  try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    const data = await fs.readFile(PROXY_FILE, "utf-8");
-    const proxies = JSON.parse(data);
-    if (Array.isArray(proxies)) {
-      console.log(`📂 Loaded ${proxies.length} proxies from ${PROXY_FILE}`);
-      return proxies;
+// Unified Load (with migration)
+async function loadConfig() {
+  // Ensure data directory exists first
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  
+  // Check if settings.json exists
+  const settingsExists = await fileExists(SETTINGS_FILE);
+  
+  if (settingsExists) {
+    try {
+      // Try to load unified file
+      const data = await fs.readFile(SETTINGS_FILE, "utf-8");
+      const loaded = JSON.parse(data);
+      
+      // Merge with defaults to ensure structure
+      globalConfig = {
+          system: { ...globalConfig.system, ...(loaded.system || loaded) }, // Handle potential flat legacy settings
+          proxies: loaded.proxies || globalConfig.proxies,
+          testUrls: loaded.testUrls || globalConfig.testUrls
+      };
+      
+      console.log(`⚙️ Loaded settings from ${SETTINGS_FILE}`);
+      console.log(`⚙️ Global Config Ready: ${globalConfig.proxies.length} proxies, ${globalConfig.testUrls.length} test URLs`);
+      return;
+    } catch (parseErr) {
+      console.warn("⚠️ Failed to parse settings.json, will reinitialize:", parseErr);
     }
-  } catch (err) {
-    // Ignore error if file doesn't exist
-    if ((err as any).code !== "ENOENT") {
-      console.error("❌ Failed to load proxies:", err);
-    }
   }
-  return [];
+
+  // settings.json doesn't exist or failed to parse - initialize it
+  console.log("⚠️ settings.json not found, initializing...");
+  
+  let migrated = false;
+
+  try {
+      // Check for legacy proxy file
+      if (await fileExists(LEGACY_PROXY_FILE)) {
+           const pData = await fs.readFile(LEGACY_PROXY_FILE, "utf-8");
+           const pJson = JSON.parse(pData);
+           if (Array.isArray(pJson)) {
+               globalConfig.proxies = pJson;
+               migrated = true;
+               console.log("✅ Migrated proxies.json");
+           }
+      }
+      
+      // Check for legacy test URLs file
+      if (await fileExists(LEGACY_URLS_FILE)) {
+           const uData = await fs.readFile(LEGACY_URLS_FILE, "utf-8");
+           const uJson = JSON.parse(uData);
+           if (Array.isArray(uJson)) {
+               globalConfig.testUrls = uJson;
+               migrated = true;
+               console.log("✅ Migrated test_urls.json");
+           }
+      }
+      
+  } catch (migErr) {
+      console.warn("Migration warning:", migErr);
+  }
+
+  // Save defaults (or migrated data) to create the file
+  await saveConfig();
+  console.log("🆕 Initialized settings.json with defaults" + (migrated ? " (and migrated data)" : ""));
+  
+  console.log(`⚙️ Global Config Ready: ${globalConfig.proxies.length} proxies, ${globalConfig.testUrls.length} test URLs`);
 }
 
-// Push proxies to GOST
+
 // --- GOST v3 Config Helpers ---
 
 interface V3Node {
@@ -168,40 +242,9 @@ interface V3Node {
   };
 }
 
-interface V3Hop {
-  name: string;
-  nodes: V3Node[];
-  selector?: {
-    strategy: string;
-    maxFails?: number;
-    failTimeout?: string;
-  };
-}
-
-interface V3Chain {
-  name: string;
-  hops: V3Hop[];
-}
-
-interface V3Service {
-  name: string;
-  addr: string;
-  handler: {
-    type: string;
-    chain: string;
-  };
-  listener: {
-    type: string;
-  };
-}
-
-// interface V3Config {
-//   services: V3Service[];
-//   chains: V3Chain[];
-// }
-
 // Update GOST Chain (v3)
-async function updateGostChain(proxies: string[]) {
+async function updateGostChain() {
+  const proxies = globalConfig.proxies;
   const nodes: V3Node[] = [];
 
   for (const line of proxies) {
@@ -235,7 +278,7 @@ async function updateGostChain(proxies: string[]) {
   if (nodes.length === 0) return 0;
 
   // v3 Strategy Mapping
-  let strategy = currentSettings.strategy || "round";
+  let strategy = globalConfig.system.strategy || "round";
   if (strategy === "round") strategy = "round"; 
 
   const chainPayload = {
@@ -244,8 +287,8 @@ async function updateGostChain(proxies: string[]) {
       name: "hop-0",
       selector: {
           strategy: strategy,
-          maxFails: currentSettings.maxRetries,
-          failTimeout: `${currentSettings.timeout}s`
+          maxFails: globalConfig.system.maxRetries,
+          failTimeout: `${globalConfig.system.timeout}s`
       },
       nodes: nodes
     }]
@@ -265,7 +308,6 @@ async function updateGostChain(proxies: string[]) {
   
   try {
     // 1. Configure Chain
-    // Try to delete existing chain first (to avoid conflict or ensure update)
     try {
         await axios.delete(`${GOST_API_URL}/config/chains/upstream-chain`);
     } catch (e) { /* ignore 404 */ }
@@ -274,7 +316,6 @@ async function updateGostChain(proxies: string[]) {
     await axios.post(`${GOST_API_URL}/config/chains`, chainPayload);
 
     // 2. Configure Service
-    // Try to delete existing service first
     try {
         await axios.delete(`${GOST_API_URL}/config/services/proxy-service`);
     } catch (e) { /* ignore 404 */ }
@@ -301,9 +342,17 @@ const wsClients: Set<WebSocket> = new Set();
 // Broadcast log to all WebSocket clients
 function broadcastLog(log: LogEntry) {
   logs.push(log);
+  // Respect memory limit
+  
   if (logs.length > MAX_LOGS) {
-    logs.shift();
+     // remove overflow
+    logs.splice(0, logs.length - MAX_LOGS);
   }
+
+  // Also enable winston logging
+  if (log.level === "INFO") logger.info(log.message);
+  else if (log.level === "ERROR") logger.error(log.message);
+  else logger.info(`[${log.level}] ${log.message}`);
 
   const message = JSON.stringify({ type: "log", data: log });
   wsClients.forEach((client) => {
@@ -356,12 +405,12 @@ function parseProxyString(proxyStr: string): ProxyNode | null {
 
 // API Routes
 
-// Get current proxies (return locally stored list)
+// Get current proxies
 app.get("/api/proxies", (_req: Request, res: Response) => {
-  res.json({ proxies: savedProxyList });
+  res.json({ proxies: globalConfig.proxies });
 });
 
-// Update proxies (replace all)
+// Update proxies
 app.post("/api/proxies", async (req: Request, res: Response) => {
   try {
     const { proxyList } = req.body;
@@ -385,19 +434,20 @@ app.post("/api/proxies", async (req: Request, res: Response) => {
       return;
     }
 
+    // Update global config
+    globalConfig.proxies = lines.filter(line => line.trim() && !line.trim().startsWith("#"));
+    
     // Update GOST
     try {
-        await updateGostChain(lines);
+        await updateGostChain();
     } catch (error) {
-        console.error("Failed to update GOST chain (GOST might be offline):", error);
-        // Continue to save locally so user doesn't lose data
+        console.error("Failed to update GOST chain:", error);
     }
 
-    // Update local state and save to file
-    savedProxyList = lines.filter(line => line.trim() && !line.trim().startsWith("#"));
-    await saveProxiesToFile(savedProxyList);
+    // Save
+    await saveConfig();
 
-    res.json({ success: true, count: nodes.length, warning: "Saved locally, but GOST update failed (is it running?)" });
+    res.json({ success: true, count: nodes.length });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("Error updating proxies:", error);
@@ -409,23 +459,15 @@ app.post("/api/proxies", async (req: Request, res: Response) => {
 app.post("/api/settings", async (req: Request, res: Response) => {
     try {
         const settings = req.body;
-        // Validate? (skip for brevity, assume UI sends correct types or cast)
-        const oldConcurrency = currentSettings.concurrency;
-        currentSettings = { ...currentSettings, ...settings };
-        await saveSettingsToFile(currentSettings);
-
-        // If strategy/retries changed, we should re-apply the chain if proxies exist
-        if (savedProxyList.length > 0) {
-             // Re-push chain with new strategy
-             updateGostChain(savedProxyList).catch(err => console.error("Failed to update chain after settings change", err));
+        globalConfig.system = { ...globalConfig.system, ...settings };
+        await saveConfig();
+        
+        // Push chain update incase strategy changed
+        if (globalConfig.proxies.length > 0) {
+             updateGostChain().catch(err => console.error("Failed to update chain after settings change", err));
         }
         
-        // If concurrency changed, we might need to restart GOST to apply GOMAXPROCS
-        if (settings.concurrency !== undefined && settings.concurrency !== oldConcurrency) {
-            // We won't auto-restart, UI should handle that or notify user to restart
-        }
-
-        res.json({ success: true, settings: currentSettings });
+        res.json({ success: true, settings: globalConfig.system });
     } catch (error) {
         res.status(500).json({ error: "Failed to save settings" });
     }
@@ -433,60 +475,149 @@ app.post("/api/settings", async (req: Request, res: Response) => {
 
 // Get settings
 app.get("/api/settings", (_req: Request, res: Response) => {
-    res.json(currentSettings);
+    res.json(globalConfig.system);
 });
 
-// Get GOST status
-app.get("/api/status", async (_req: Request, res: Response) => {
-  try {
-    await axios.get(`${GOST_API_URL}/api/config`);
-    // const config = response.data;
-
-    // const services = config.services || [];
-    // v3 status check logic
-    // We might need to fetch /config or /service/proxy-service to check status
-    // For now, assume if savedProxyList has items and gost is running, it's roughly ready.
-    // Or we can query the API.
-    
-    res.json({
-      online: true,
-      proxyServiceReady: true, // v3 usually applies immediately
-      proxyCount: savedProxyList.length, // Use local truth for now
-      gost: gostManager.getStatus()
-    });
-  } catch {
-    // API failed, but process might be running (e.g. no config yet or v3 startup delay)
-    // We should differentiate "Process Running" from "API Ready"
-    // For "Online" badge, we usually mean "Services Ready".
-    // But if process is running, we should show that.
-    
-    // Check if process is actually running via manager
-    const mgrStatus = gostManager.getStatus();
-    const isProcessRunning = mgrStatus.running;
-
-    res.json({
-        online: isProcessRunning, // Mark online if process is up, even if API isn't responding yet
-        proxyServiceReady: false,
-        proxyCount: savedProxyList.length,
-        gost: mgrStatus
-    });
-  }
+// Get test URLs
+app.get("/api/test-urls", (_req: Request, res: Response) => {
+    res.json({ urls: globalConfig.testUrls });
 });
 
-app.post("/api/service/start", (_req, res) => {
+// Update test URLs
+app.post("/api/test-urls", async (req: Request, res: Response) => {
+    try {
+        const { urls } = req.body;
+        if (!Array.isArray(urls)) {
+            res.status(400).json({ error: "urls must be an array" });
+            return;
+        }
+        globalConfig.testUrls = urls;
+        await saveConfig();
+        res.json({ success: true, count: urls.length });
+    } catch (error) {
+        res.status(500).json({ error: "Failed to save test URLs" });
+    }
+});
+
+// Restore Proxies Helper
+async function restoreProxies() {
+    // Wait for a moment for GOST to be ready (it starts async)
+    await new Promise(r => setTimeout(r, 2000));
+    
+    if (globalConfig.proxies.length > 0) {
+        console.log(`🔄 Restoring ${globalConfig.proxies.length} proxies to GOST...`);
+        try {
+            await updateGostChain();
+            console.log("✅ Proxies restored successfully");
+        } catch (error) {
+            console.error("❌ Failed to restore proxies:", error);
+        }
+    }
+}
+
+// --- GOST Log Handler ---
+// Parse GOST's JSON logs and broadcast to UI
+gostManager.setLogCallback((logLine: string) => {
+    try {
+        // GOST outputs JSON logs
+        const parsed = JSON.parse(logLine);
+        
+        // Filter to show interesting logs (handler events with routing info)
+        if (parsed.kind === "handler" && parsed.host) {
+            // This is a request being routed
+            const host = parsed.host || "unknown";
+            const dst = parsed.dst || "direct"; // Upstream proxy used
+            const msg = parsed.msg || "";
+            
+            // Format: "<->" means connection established, ">-<" means connection closed
+            if (msg.includes("<->")) {
+                broadcastLog({
+                    timestamp: new Date().toISOString(),
+                    level: "GOST",
+                    message: `🔗 ${host} via ${dst}`,
+                });
+            }
+        } else if (parsed.kind === "service" && parsed.msg) {
+            // Service status messages
+            broadcastLog({
+                timestamp: new Date().toISOString(),
+                level: "GOST",
+                message: `⚙️ ${parsed.msg}`,
+            });
+        }
+    } catch {
+        // Not JSON or parse error - log raw if it looks important
+        if (logLine.includes("error") || logLine.includes("Error")) {
+            broadcastLog({
+                timestamp: new Date().toISOString(),
+                level: "ERROR",
+                message: `GOST: ${logLine}`,
+            });
+        }
+    }
+});
+
+// --- Application Startup ---
+// Load config first (creates settings.json if missing), then start GOST
+loadConfig().then(() => {
+    // Start GOST only after config is ready
     gostManager.start(undefined, getGostEnv());
-    res.json(gostManager.getStatus());
+    restoreProxies();
+}).catch(err => {
+    console.error("❌ Failed to load config during startup:", err);
 });
 
-app.post("/api/service/stop", async (_req, res) => {
-    await gostManager.stop();
-    res.json(gostManager.getStatus());
+// Service Controls
+app.post("/api/service/restart", async (_req: Request, res: Response) => {
+    try {
+        await gostManager.restart(undefined, getGostEnv());
+        restoreProxies(); // Re-apply config
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: "Failed to restart" });
+    }
 });
 
-app.post("/api/service/restart", async (_req, res) => {
-    await gostManager.restart(undefined, getGostEnv());
-    res.json(gostManager.getStatus());
+app.post("/api/service/start", async (_req: Request, res: Response) => {
+    try {
+        gostManager.start(undefined, getGostEnv());
+        restoreProxies(); // Re-apply config
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: "Failed to start" });
+    }
 });
+
+app.post("/api/service/stop", async (_req: Request, res: Response) => {
+    try {
+        await gostManager.stop();
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: "Failed to stop" });
+    }
+});
+
+app.get("/api/status", async (_req: Request, res: Response) => {
+    const gostStatus = gostManager.getStatus();
+    
+    // Check if GOST API is responding (indicates service is ready)
+    let apiResponding = false;
+    try {
+        // GOST v3 uses /config not /api/config
+        await axios.get(`${GOST_API_URL}/config`, { timeout: 2000 });
+        apiResponding = true;
+    } catch {
+        // API not responding
+    }
+    
+    res.json({
+        online: gostStatus.running,
+        proxyServiceReady: apiResponding && globalConfig.proxies.length > 0,
+        proxyCount: globalConfig.proxies.length,
+        gost: gostStatus
+    });
+});
+
 
 // Get logs
 app.get("/api/logs", (_req: Request, res: Response) => {
@@ -499,6 +630,21 @@ app.delete("/api/logs", (_req: Request, res: Response) => {
   res.json({ success: true });
 });
 
+// Add a log entry (for frontend to send test start/stop etc.)
+app.post("/api/logs", (req: Request, res: Response) => {
+  const { message, level } = req.body;
+  if (!message) {
+    res.status(400).json({ error: "message required" });
+    return;
+  }
+  broadcastLog({
+    timestamp: new Date().toISOString(),
+    level: level || "INFO",
+    message
+  });
+  res.json({ success: true });
+});
+
 // Test proxy endpoint - makes request through the GOST proxy
 app.get("/api/test", async (req: Request, res: Response) => {
   const url = req.query.url as string;
@@ -508,52 +654,80 @@ app.get("/api/test", async (req: Request, res: Response) => {
   }
 
   try {
-    // Use axios with proxy config to route through GOST
+    // Create proper proxy agents for HTTP/HTTPS requests
+    const proxyUrl = `http://${GOST_PROXY_HOST}:${GOST_PROXY_PORT}`;
+    const isHttps = url.startsWith('https://');
+    const agent = isHttps 
+      ? new HttpsProxyAgent(proxyUrl)
+      : new HttpProxyAgent(proxyUrl);
+    
+    // Complete Chrome browser headers to bypass anti-bot detection
+    const browserHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Cache-Control': 'max-age=0',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+      'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+      'Sec-Ch-Ua-Mobile': '?0',
+      'Sec-Ch-Ua-Platform': '"macOS"',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+    };
+    
+    // Use axios with proper agent for proxy routing
     const response = await axios.get(url, {
-      proxy: {
-        host: GOST_PROXY_HOST,
-        port: GOST_PROXY_PORT,
-        protocol: 'http'
-      },
-      timeout: 10000,
+      httpAgent: isHttps ? undefined : agent,
+      httpsAgent: isHttps ? agent : undefined,
+      headers: browserHeaders,
+      timeout: 15000,
+      maxRedirects: 10,
+      decompress: true,
+      // Accept 2xx and 3xx as success (some sites redirect)
+      validateStatus: (status) => status >= 200 && status < 400,
     });
 
     // Try to extract IP from response
     let ip = "";
+    const status = response.status;
+    
+    // IP Regex (simple)
+    const ipRegex = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/;
+
     if (typeof response.data === "string") {
-      ip = response.data.trim().substring(0, 50);
+        const trimmed = response.data.trim();
+        if (ipRegex.test(trimmed) && trimmed.length < 20) {
+            ip = trimmed;
+        }
     } else if (response.data.origin) {
-      ip = response.data.origin;
+        ip = response.data.origin;
     } else if (response.data.ip) {
-      ip = response.data.ip;
-    } else {
-      ip = JSON.stringify(response.data).substring(0, 50);
+        ip = response.data.ip;
     }
 
-    broadcastLog({
-      timestamp: new Date().toISOString(),
-      level: "INFO",
-      message: `Test ${url} -> ${ip}`,
-    });
-
-    res.json({ success: true, ip, result: response.data });
+    // Note: Per-test logs removed - GOST logs show routing details
+    res.json({ success: true, ip: ip || "hidden", status, result: response.data });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Unknown error";
-    
+    // Check if it's an axios error with response
+    const status = (error as any).response?.status || "ERR";
+
+    // Keep error logs for debugging
     broadcastLog({
       timestamp: new Date().toISOString(),
       level: "ERROR",
-      message: `Test ${url} failed: ${message}`,
+      message: `Test ${url} [${status}]: ${message}`,
     });
 
     res.json({ success: false, error: message });
   }
 });
 
-// Catch-all route to serve React app (Express v5 syntax)
-app.get("/{*splat}", (_req: Request, res: Response) => {
-  res.sendFile(path.join(__dirname, "../../dist/index.html"));
-});
+
 
 // Create HTTP server
 const server = createServer(app);
@@ -576,7 +750,7 @@ wss.on("connection", (ws: WebSocket) => {
 // For now, we'll poll GOST status periodically
 setInterval(async () => {
   try {
-    const response = await axios.get(`${GOST_API_URL}/api/config`);
+    const response = await axios.get(`${GOST_API_URL}/config`);
     const services = response.data.services || [];
     const proxyService = services.find((s: { name: string }) => s.name === "proxy-service");
     
@@ -599,26 +773,18 @@ setInterval(async () => {
   }
 }, 5000);
 
+
+
+// Catch-all route to serve React app (Express v5 syntax)
+// MUST BE LAST
+app.get("/{*splat}", (_req: Request, res: Response) => {
+  res.sendFile(path.join(__dirname, "../../dist/index.html"));
+});
+
 // Start server
-server.listen(PORT, async () => {
+server.listen(PORT, () => {
   console.log(`🚀 GOST Proxy Manager running on http://localhost:${PORT}`);
   console.log(`📡 GOST API: ${GOST_API_URL}`);
-  
-  // Load saved proxies on startup
-  savedProxyList = await loadProxiesFromFile();
-  if (savedProxyList.length > 0) {
-    console.log(`🔄 Restoring ${savedProxyList.length} proxies to GOST...`);
-    // We need to wait a bit for GOST to be ready, or just try and let it fail/retry
-    // For now, we'll try once after a short delay
-    setTimeout(async () => {
-      try {
-        await updateGostChain(savedProxyList);
-        console.log("✅ Proxies restored successfully");
-      } catch (err) {
-        console.error("⚠️ Failed to restore proxies on startup (GOST might not be ready)", err);
-      }
-    }, 2000);
-  }
 
   broadcastLog({
     timestamp: new Date().toISOString(),
@@ -626,3 +792,4 @@ server.listen(PORT, async () => {
     message: "GOST Proxy Manager started",
   });
 });
+
