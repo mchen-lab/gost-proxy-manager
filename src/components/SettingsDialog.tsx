@@ -171,6 +171,12 @@ export function SettingsDialog({ onConfigUpdate }: { onConfigUpdate?: () => void
             {loading ? "Saving..." : "Save Configuration"}
           </Button>
         </DialogFooter>
+        <div className="absolute bottom-2 left-4 text-xs text-muted-foreground opacity-50 pointer-events-none">
+          Commit: {typeof __COMMIT_HASH__ !== 'undefined' ? __COMMIT_HASH__ : 'unknown'}
+        </div>
+        <div className="absolute bottom-2 right-4 text-xs text-muted-foreground opacity-50 pointer-events-none">
+          v{typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'}
+        </div>
       </DialogContent>
     </Dialog>
   );

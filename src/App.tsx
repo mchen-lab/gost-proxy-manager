@@ -346,7 +346,10 @@ function App() {
                     <div className="space-y-4 py-4">
                     <div className="flex justify-between border-b pb-2">
                         <span className="text-sm text-muted-foreground">Version</span>
-                        <span className="font-mono text-sm">{__APP_VERSION__}</span>
+                        <div className="flex flex-col items-end">
+                            <span className="font-mono text-sm">{__APP_VERSION__}</span>
+                            <span className="text-xs text-muted-foreground">{new Date(__BUILD_DATE__).toLocaleDateString()}</span>
+                        </div>
                     </div>
                     <div className="flex justify-between border-b pb-2">
                         <span className="text-sm text-muted-foreground">Commit</span>

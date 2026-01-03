@@ -23,6 +23,7 @@ export default defineConfig({
   define: {
     '__APP_VERSION__': JSON.stringify(packageJson.version + (process.env.BUILD_METADATA || '')),
     '__COMMIT_HASH__': JSON.stringify(commitHash),
+    '__BUILD_DATE__': JSON.stringify(new Date().toISOString()),
   },
   plugins: [react(), tailwindcss()],
   resolve: {

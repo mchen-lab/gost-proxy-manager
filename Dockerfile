@@ -12,6 +12,14 @@ RUN npm ci
 # Copy source files
 COPY . .
 
+# Build arguments
+ARG GIT_COMMIT
+ARG BUILD_METADATA
+
+# Set environment variables for build
+ENV GIT_COMMIT=$GIT_COMMIT
+ENV BUILD_METADATA=$BUILD_METADATA
+
 # Build frontend
 RUN npm run build
 
