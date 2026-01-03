@@ -68,8 +68,8 @@ TAG_NAME="v$VERSION_NUM"
 # If this is a re-release (no bump arg), we might need to purge the old tag to trigger CI
 if [ "$FORCE_RE_RELEASE" = "true" ]; then
     echo "🔥 Re-release mode: Removing existing tag '$TAG_NAME' from remote and local..."
-    git push origin --delete "$TAG_NAME" || echo "   (Remote tag didn't exist or failed to delete)"
-    git tag -d "$TAG_NAME" || echo "   (Local tag didn't exist)"
+    git push origin --delete "$TAG_NAME" 2>/dev/null || echo "   (Remote tag didn't exist or failed to delete)"
+    git tag -d "$TAG_NAME" 2>/dev/null || echo "   (Local tag didn't exist)"
 fi
 
 # Create tag
